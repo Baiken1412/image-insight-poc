@@ -1,0 +1,42 @@
+# Python
+__pycache__/
+*.pyc
+.pytest_cache/
+.ruff_cache/
+*.egg-info/
+
+# Local runtime data — not source
+image_insight.db
+image_insight.db-shm
+image_insight.db-wal
+*.db
+
+# Build artifacts / packaging outputs — reproducible, not source
+dist/
+pyinstaller_build/*.log
+pyinstaller_build/*.json
+pyinstaller_build/build_pyinstaller/
+pyinstaller_build/dist_pyinstaller/
+
+# Large model weights — not distributed via git
+rf-detr-medium.pth
+
+# Product/requirement documents — excluded from this code-only repo per request
+*.docx
+Image-Insight-开发计划.md
+涉案财物一物一档视觉可信管理产品需求与必要性分析_V0.2.md
+涉案财物全生命周期视觉可信管理技术方案_V0.2.md
+特别需求补充.md
+
+# Reference/demo material and sample photo sets — not this project's source
+图像洞察_演示版_20260902/
+图片/
+物品图片/
+
+# Editor/agent tooling caches
+.claude/
+.vscode/
+.idea/
+
+# Env files that may carry local overrides
+.env

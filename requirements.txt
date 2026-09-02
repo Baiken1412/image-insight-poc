@@ -1,0 +1,29 @@
+# Web app
+fastapi
+uvicorn
+python-multipart
+jinja2
+pydantic
+
+# Fast mode (RF-DETR pretrained detection)
+# Install torch/torchvision FIRST from the CUDA index for GPU support, e.g.:
+#   pip install torch torchvision --index-url https://download.pytorch.org/whl/cu124
+torch
+torchvision
+rfdetr
+
+# Advanced mode (Qwen3-VL, runs fully locally — no API key/network at request time)
+transformers>=4.57.0
+accelerate
+qwen-vl-utils
+pillow
+
+# Advanced mode OCR pass
+# Install paddlepaddle-gpu FIRST from the official index, e.g.:
+#   pip install paddlepaddle-gpu -i https://www.paddlepaddle.org.cn/packages/stable/cu126/
+paddlepaddle-gpu
+paddleocr
+
+# Tests
+pytest
+pytest-asyncio

@@ -1,0 +1,118 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="color-scheme" content="dark" />
+  <title>图像洞察</title>
+  <link rel="stylesheet" href="/static/style.css" />
+</head>
+<body>
+  <div class="app-shell">
+    <header class="topbar">
+      <div class="brand">
+        <div class="brand-mark" aria-hidden="true">
+          <svg viewBox="0 0 24 24" fill="none" stroke-width="1.6"><path d="M12 3 4.5 6.2v5.2c0 4.5 2.8 7.8 7.5 9.6 4.7-1.8 7.5-5.1 7.5-9.6V6.2L12 3Z"/><path d="M8.2 11.3h7.6M12 7.5v7.6"/></svg>
+        </div>
+        <div class="brand-copy">
+          <div class="eyebrow">Evidence Vision Intelligence</div>
+          <h1>图像洞察 <span>涉案财物视觉识别辅助录入</span></h1>
+        </div>
+      </div>
+      <div class="system-status" aria-label="系统状态">
+        {% if model_ready %}
+        <span class="status-chip"><i class="status-dot"></i>推理节点正常</span>
+        {% else %}
+        <span class="status-chip warn"><i class="status-dot"></i>模型未就绪，请检查服务端日志</span>
+        {% endif %}
+        <span class="status-chip">本机离线 · 数据不出域</span>
+        <span class="status-chip clock" id="clock">--:--:--</span>
+      </div>
+    </header>
+
+    <div class="trust-strip">
+      <span><strong>视觉辅助建议</strong> · 所有结果仅供参考，最终以人工确认为准。</span>
+      <span class="trust-side">© 北京宽和警鹰科技发展有限公司</span>
+    </div>
+
+    <section class="mode-rail" aria-label="识别模式">
+      <div class="mode-switcher" role="tablist">
+        <button class="mode-button active" id="tab-fast" role="tab" aria-selected="true" data-mode="fast">
+          <span class="mode-number">01</span><span class="mode-title">快速模式</span>
+          <span class="mode-meta">名称 · 大类/细类 · 数量 · 秒级反馈</span>
+        </button>
+        <button class="mode-button" id="tab-advanced" role="tab" aria-selected="false" data-mode="advanced">
+          <span class="mode-number">02</span><span class="mode-title">高级模式</span>
+          <span class="mode-meta">品牌型号 · OCR · 外观 · 逐项复核</span>
+        </button>
+      </div>
+      <div class="mode-explainer">
+        <div class="mode-explainer-icon" aria-hidden="true">
+          <svg viewBox="0 0 24 24" fill="none" stroke-width="1.6"><path d="m13 2-1 7h7l-8 13 1-8H5l8-12Z"/></svg>
+        </div>
+        <div class="mode-explainer-copy">
+          <strong id="mode-desc-title">开放词汇识别 · 秒级反馈</strong>
+          <p id="mode-desc-text">物品名称由模型自由描述，自动归类到 12 大类 / 84 细类；把握不足时标记"待核实"，不强行给出确定类别。</p>
+        </div>
+        <div class="mode-scope" id="mode-scope">
+          <span class="scope-pill">名称</span><span class="scope-pill">数量</span><span class="scope-pill">分类</span>
+        </div>
+      </div>
+    </section>
+
+    <main class="workspace">
+      <section class="panel input-panel" aria-labelledby="input-title">
+        <div class="panel-head">
+          <div><span class="panel-kicker">01 / EVIDENCE INPUT</span><h2 id="input-title">物证图像采集</h2></div>
+          <span class="panel-sub">支持批量 · 多角度自动合并</span>
+        </div>
+        <div class="input-body">
+          <form id="upload-form">
+            <label class="upload-zone" id="upload-zone">
+              <input type="file" id="upload-files" accept="image/*" multiple aria-label="选择物证照片" />
+              <div class="upload-prompt" id="upload-prompt">
+                <svg viewBox="0 0 24 24" fill="none" stroke-width="1.6"><path d="M12 16V4m0 0L7.5 8.5M12 4l4.5 4.5"/><path d="M5 14v4.5A1.5 1.5 0 0 0 6.5 20h11a1.5 1.5 0 0 0 1.5-1.5V14"/></svg>
+                <strong>添加物证照片</strong>
+                <span>点击选择或拖放到此处 · 按住 Ctrl / Cmd / Shift 可多选</span>
+              </div>
+              <div class="file-previews" id="file-previews"></div>
+            </label>
+
+            <p class="upload-note">文件名符合"物品编号_时间戳哈希"格式的会自动合并为同一物品的多角度照片，其余各自独立分析——一次上传可处理多件不同的物品。</p>
+
+            <button class="analyze-button" id="analyze-button" type="submit">
+              <svg viewBox="0 0 24 24" fill="none" stroke-width="1.8"><path d="M12 3v3m0 12v3M3 12h3m12 0h3M5.6 5.6l2.1 2.1m8.6 8.6 2.1 2.1m0-12.8-2.1 2.1m-8.6 8.6-2.1 2.1"/><circle cx="12" cy="12" r="4"/></svg>
+              <span id="analyze-button-text">开始快速识别</span>
+            </button>
+            <p class="button-note">识别结果会自动保存至本地数据库；同一物品编号再次分析将覆盖旧记录，不会重复入库。</p>
+          </form>
+        </div>
+      </section>
+
+      <section class="panel result-panel" aria-labelledby="result-title">
+        <div class="panel-head">
+          <div><span class="panel-kicker">02 / AI ASSISTED RESULT</span><h2 id="result-title">智能识别结果</h2></div>
+          <div class="result-toolbar">
+            <button class="mini-button" id="clear-button" type="button">清空结果</button>
+          </div>
+        </div>
+        <div class="result-body" id="result" aria-live="polite"></div>
+      </section>
+    </main>
+
+    <footer class="bottom-line">
+      <span><strong>北京宽和警鹰科技发展有限公司</strong> · 涉案财物视觉识别 PoC，非正式业务系统</span>
+      <div class="steps"><span>图像采集</span><i class="step-dot"></i><i class="step-line"></i><span>视觉识别</span><i class="step-dot"></i><i class="step-line"></i><span>人工复核</span><i class="step-dot"></i><i class="step-line"></i><span>结构化留痕</span></div>
+    </footer>
+  </div>
+
+  <div class="toast" id="toast" role="status"><span class="toast-icon" id="toast-icon">✓</span><span id="toast-text"></span></div>
+
+  <div id="lightbox" class="lightbox" hidden>
+    <button type="button" class="lightbox-close" aria-label="关闭大图">×</button>
+    <img id="lightbox-img" alt="" />
+  </div>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>
