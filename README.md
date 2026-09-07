@@ -1,5 +1,9 @@
 # Image Insight
 
+**🌐 [简体中文](#简体中文) | [English](#english)**
+
+<a id="简体中文"></a>
+
 给计算机一张照片，看它能看懂多少——涉案财物视觉识别 PoC 的产品化 demo。**完全本地离线运行，不联网、不调用任何云端 API。**
 
 ## 两种模式
@@ -76,3 +80,88 @@ Mage-VL业务场景与产品化研究任务书.docx   （另一条独立研究�
 - 高级模式的多角度合并按"大类"分桶（`ItemAnalysis` 没有像快速模式那样的自由文本物品名可用于匹配）：如果同一张照片里恰好有两个完全同大类的不同物品，多角度合并可能会误并为一条记录。这符合"一个 goods_id 对应一件实物、只是分角度拍摄"的实际使用场景，但不适合真正独立的多物品多角度场景。
 - 模型单次生成有长度上限（`QWEN_MAX_NEW_TOKENS`，默认 1536），照片里物品较多或描述较长时，输出的 JSON 可能还没写完就被截断（界面会报"Unterminated string"一类的解析错误）。`image_insight/vlm/json_repair.py` 会从截断的原始文本里抢救出已经完整生成的物品，不会因为最后一条不完整就把前面全部丢弃；只要发生截断，结果会明确标注"内容被截断，可能遗漏物品"并强制人工核实，不会当作正常结果悄悄展示。如果频繁遇到这个提示，可以把 `.env.example` 里的 `QWEN_MAX_NEW_TOKENS` 调大（代价是单次分析变慢）。
 - 本 PoC 演示程序不是正式业务系统，所有结果仅供参考，最终以人工确认为准。
+
+---
+
+<a id="english"></a>
+
+## English
+
+Give the computer a photo and see how much it can understand — a productized demo of a case-property visual identification PoC. **Runs entirely offline on local hardware — no network calls, no cloud API of any kind.**
+
+### Two modes
+
+- **Fast mode**: open-vocabulary recognition — item names are freely described by the model (not limited to a fixed category list) and auto-classified into the system's official taxonomy of 12 major categories / 84 subcategories (see `特别需求补充.md` §3). Answers only "what's there and how many"; does not cover brand/model/text details. Multiple photos of the same item from different angles can be uploaded and are automatically merged into one result (taking the max count across angles, not the sum).
+- **Advanced mode**: structured understanding — major/sub category, brand, model, color, visible text, appearance features, condition. Every field is tagged as one of "confirmed / suspected / undetermined"; nothing is ever fabricated when uncertain. Appearance notes describe only "what is visually observed" (color, shape, location) and never draw diagnostic conclusions about the cause of marks or stains — that's the job of a professional forensic examiner. Visible text is first read by Qwen3-VL and then cross-checked locally by PaddleOCR ("the VLM understands, the OCR reads precisely"). Also supports auto-merging multiple angle photos of the same item.
+
+Both modes report a confidence score; when it's too low the item is flagged "needs verification" rather than forcing a definite category (the threshold is configurable via environment variables, see `.env.example`). The 12 mandatory-manual-review subcategories listed in `特别需求补充.md` §2 (collectibles, surveillance recording equipment, drugs, etc.) are always flagged in red in the UI regardless of confidence.
+
+Both modes share the same locally-loaded Qwen3-VL model — only the prompt differs.
+
+The UI supports batch upload: selected photos show thumbnails immediately (each can be removed individually); files whose names follow the "item-id_timestamp-hash" pattern are auto-merged as multiple angles of the same item, the rest are analyzed independently — one upload can handle several unrelated items at once, no need to submit separately.
+
+### Data persistence
+
+Every analysis result is automatically saved to a local SQLite database (`image_insight.db`, path configurable via the `IMAGE_INSIGHT_DB_PATH` environment variable), keyed by "item id (goods_id) + mode (fast/advanced)". **Re-analyzing the same item overwrites the existing record rather than adding a new one** — the database stores "this item's latest analysis result," not an append-only log of every run. Fast-mode and advanced-mode results are stored separately, so running fast mode won't overwrite a prior advanced-mode record, and vice versa.
+
+A save failure does not affect the display of the current analysis result (same as OCR — a nice-to-have, not a hard dependency). `GET /api/records` (optionally filtered with `?mode=fast` or `?mode=advanced`) shows what's currently stored.
+
+### Quick start
+
+```bash
+pip install -r requirements.txt
+# See the comments in requirements.txt: torch and paddlepaddle-gpu need to be installed
+# from their respective CUDA-specific package indexes first
+
+python -m uvicorn image_insight.api.main:app --host 127.0.0.1 --port 8000
+```
+
+Open `http://127.0.0.1:8000` in a browser. The first run automatically downloads the Qwen3-VL-2B-Instruct weights (~4GB, cached to `~/.cache/huggingface`, only needed once — fully offline afterward).
+
+Stop the service with `Ctrl+C` in the terminal.
+
+#### Running tests
+
+```bash
+python -m pytest tests/ -q
+```
+
+#### Environment variables (optional)
+
+Copy `.env.example` and adjust as needed; sensible defaults are used if unset, and advanced mode requires no API key at all (everything runs locally).
+
+### Directory layout
+
+```
+image_insight/          application code
+  vlm/                   local Qwen3-VL inference wrapper (shared by both modes)
+  api/                   FastAPI service + frontend page
+  taxonomy.py            official 12-category / 84-subcategory taxonomy + classification validation, mandatory-review list
+  ocr/                    PaddleOCR wrapper (advanced-mode visible-text cross-check)
+  db.py                   local SQLite persistence (overwrite-on-save, keyed by goods_id+mode)
+  config.py               runtime configuration (reads environment variables)
+  detection/               RF-DETR zero-shot phone counting (legacy artifact, not wired into the live service, see below)
+tests/                    unit/integration tests (136 cases, pytest)
+eval/                     real-world accuracy evaluation of RF-DETR phone counting (14/15, 93.3%)
+物品图片/                  132 real item photos (case-property evaluation dataset)
+Image-Insight-开发计划.md  the original phased development plan document
+
+The following are project background reference materials for the overall
+case-property "one item, one file" scheme (not part of this demo's code):
+涉案财物一物一档视觉可信管理产品需求与必要性分析_V0.2.docx / .md
+涉案财物全生命周期视觉可信管理技术方案_V0.2.docx / .md
+特别需求补充.md
+task for andy.docx
+模型选择.docx
+Mage-VL业务场景与产品化研究任务书.docx   (a separate, unrelated research track)
+```
+
+### Known notes
+
+- `rf-detr-medium.pth` (~400MB) is the locally cached RF-DETR pretrained weight file — it is not junk, please don't delete it. If deleted, it will be re-downloaded the next time `image_insight/detection/` is used (currently not wired into the live service, kept only as an already-evaluated legacy artifact).
+- Fast mode originally used RF-DETR/COCO's 5 fixed categories, later switched to open-vocabulary local-VLM recognition based on feedback; `image_insight/detection/phone_counter.py` is kept as an independently-verified module (93.3% accuracy), but the current service no longer calls it.
+- An 8GB-VRAM GPU can run Qwen3-VL-2B smoothly; with more headroom, you can swap `QWEN_MODEL_ID` in `.env.example` for `Qwen/Qwen3-VL-4B-Instruct` for better results — no code changes needed.
+- The confidence score is Qwen3-VL's own subjective rating from the same JSON output, not a calibrated probability like a classifier's (generative models have no native softmax confidence) — it's used only for ranking and the "needs verification" threshold, and the frontend never presents it to users as a percentage.
+- Advanced mode's multi-angle merging buckets by "major category" (`ItemAnalysis` has no free-text item name to match against, unlike fast mode): if the same photo happens to contain two different items of the exact same major category, multi-angle merging may mistakenly combine them into one record. This matches the intended use case of "one goods_id = one physical item, just photographed from different angles," but isn't suited to a genuinely independent multi-item, multi-angle scenario.
+- A single model generation has a length cap (`QWEN_MAX_NEW_TOKENS`, default 1536); when a photo has many items or long descriptions, the output JSON may get cut off before it's finished (the UI will report a parse error like "Unterminated string"). `image_insight/vlm/json_repair.py` salvages the items that were already fully generated from the truncated raw text rather than discarding everything just because the last entry is incomplete; whenever truncation happens, the result is explicitly labeled "content truncated, items may be missing" and forced into manual review — it's never silently shown as a normal result. If this warning shows up often, increase `QWEN_MAX_NEW_TOKENS` in `.env.example` (at the cost of slower analysis).
+- This PoC demo is not a production business system; all results are for reference only, with human confirmation as the final word.
