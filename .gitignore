@@ -21,6 +21,10 @@ pyinstaller_build/dist_pyinstaller/
 # Large model weights — not distributed via git
 rf-detr-medium.pth
 
+# Default Qwen3-VL download location (see image_insight/config.py HF_HOME
+# default and .env.example) — app-root-local HuggingFace cache, several GB
+models/huggingface/
+
 # Product/requirement documents — excluded from this code-only repo per request
 *.docx
 Image-Insight-开发计划.md

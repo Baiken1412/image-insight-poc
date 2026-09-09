@@ -4,6 +4,7 @@ uvicorn
 python-multipart
 jinja2
 pydantic
+python-dotenv
 
 # Fast mode (RF-DETR pretrained detection)
 # Install torch/torchvision FIRST from the CUDA index for GPU support, e.g.:

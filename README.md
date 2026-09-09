@@ -31,7 +31,7 @@ pip install -r requirements.txt
 python -m uvicorn image_insight.api.main:app --host 127.0.0.1 --port 8000
 ```
 
-Open `http://127.0.0.1:8000` in a browser. The first run automatically downloads the Qwen3-VL-2B-Instruct weights (~4GB, cached to `~/.cache/huggingface`, only needed once — fully offline afterward).
+Open `http://127.0.0.1:8000` in a browser. The first run automatically downloads the Qwen3-VL-2B-Instruct weights (~4GB), cached by default under this project's own `models/huggingface/` folder rather than the user-wide `~/.cache/huggingface` — so the whole app (code + model) stays one self-contained, movable folder. Only needed once — fully offline afterward. To use a different cache location, or reuse a checkpoint a teammate already downloaded, see the `HF_HOME` / `QWEN_MODEL_ID` notes in `.env.example`.
 
 Stop the service with `Ctrl+C` in the terminal.
 
@@ -43,7 +43,7 @@ python -m pytest tests/ -q
 
 ### Environment variables (optional)
 
-Copy `.env.example` and adjust as needed; sensible defaults are used if unset, and advanced mode requires no API key at all (everything runs locally).
+Copy `.env.example` to `.env` and adjust as needed — it's loaded automatically at startup (python-dotenv), no manual `export`/`setx` required. Sensible defaults are used if unset, and advanced mode requires no API key at all (everything runs locally). A variable already set in your real shell/OS environment always takes priority over the value in `.env`.
 
 ## Directory layout
 

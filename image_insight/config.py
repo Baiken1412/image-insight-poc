@@ -4,11 +4,34 @@ No secrets are ever hardcoded here (see project security rules). Advanced
 mode runs Qwen3-VL fully locally (特别需求补充.md 1.6: no photo may leave
 the machine) — there is no API key to configure, only which local
 checkpoint to load.
+
+Module import time also does two bits of environment setup, before anything
+else in the app gets a chance to read os.environ or import transformers:
+
+1. Loads `.env` from the project root (python-dotenv), so `cp .env.example
+   .env` + edit is enough — no more manually exporting env vars per shell.
+   load_dotenv() never overrides a variable already set in the real process
+   environment, so `setx`/shell exports still win over `.env`.
+2. Defaults HF_HOME to <project root>/models/huggingface (only if HF_HOME
+   isn't already set by the OS env or `.env`), so `pip install` + first run
+   downloads Qwen3-VL into the app folder itself rather than the user's
+   home-directory-wide ~/.cache/huggingface — the whole app (code + model)
+   then stays one self-contained, movable folder, matching how the
+   PyInstaller portable build's 启动服务.bat already points HF_HOME at its
+   own models/ subfolder.
 """
 from __future__ import annotations
 
 import os
 from dataclasses import dataclass
+from pathlib import Path
+
+from dotenv import load_dotenv
+
+_PROJECT_ROOT = Path(__file__).resolve().parent.parent
+
+load_dotenv(_PROJECT_ROOT / ".env")
+os.environ.setdefault("HF_HOME", str(_PROJECT_ROOT / "models" / "huggingface"))
 
 
 @dataclass(frozen=True)
