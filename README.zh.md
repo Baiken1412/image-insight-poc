@@ -30,7 +30,7 @@ pip install -r requirements.txt
 python -m uvicorn image_insight.api.main:app --host 127.0.0.1 --port 8000
 ```
 
-浏览器打开 `http://127.0.0.1:8000`。首次启动会自动下载 Qwen3-VL-2B-Instruct 权重（约 4GB，缓存到 `~/.cache/huggingface`，只需一次，此后完全离线运行）。
+浏览器打开 `http://127.0.0.1:8000`。首次启动会自动下载 Qwen3-VL-2B-Instruct 权重（约 4GB，默认缓存到项目根目录下的 `models/huggingface/`，而不是用户目录下的 `~/.cache/huggingface`——这样整个应用文件夹拷贝/搬走时模型也一起带走；只需下载一次，此后完全离线运行。想换成别的缓存位置，或者同事已经下载好模型直接复用，见 `.env.example` 里的 `HF_HOME` / `QWEN_MODEL_ID` 说明）。
 
 停止服务：终端里 `Ctrl+C`。
 
@@ -42,7 +42,7 @@ python -m pytest tests/ -q
 
 ### 环境变量（可选）
 
-复制 `.env.example` 并按需修改；不设置的话都有合理默认值，高级模式不需要任何 API key（全部本地跑）。
+复制 `.env.example` 为 `.env` 并按需修改，启动时会自动加载（python-dotenv），不用手动 `export`/`setx`；不设置的话都有合理默认值，高级模式不需要任何 API key（全部本地跑）。系统/终端里已经设置过的同名环境变量优先级高于 `.env` 文件里的值。
 
 ## 目录说明
 
