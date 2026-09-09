@@ -40,7 +40,7 @@ from starlette.concurrency import run_in_threadpool
 from starlette.requests import Request
 
 from image_insight import db
-from image_insight.config import load_db_config, load_ocr_config, load_qwen_config
+from image_insight.config import load_advanced_qwen_config, load_db_config, load_ocr_config, load_qwen_config
 from image_insight.goods import group_uploaded_photos
 from image_insight.ocr.pp_ocr import PaddleOcrTextRecognizer
 from image_insight.vlm.fast_analyzer import FastVisionAnalyzer, analyze_goods_group
@@ -113,11 +113,19 @@ def create_app(*, load_models: bool = True) -> FastAPI:
                         # it, just without the OCR cross-check on visible text.
                         logger.exception("failed to load PaddleOCR — advanced mode will run without OCR cross-check")
 
+                advanced_qwen_config = load_advanced_qwen_config()
                 app.state.analyzer = QwenVisionAnalyzer(
                     transport,
                     model_version=qwen_config.model_id,
                     ocr=ocr_recognizer,
                     ocr_min_confidence=ocr_config.min_text_confidence,
+                    # Advanced mode's own max_new_tokens/timeout, independent
+                    # of qwen_config.max_new_tokens above (which still governs
+                    # fast_analyzer via the shared transport's default) — see
+                    # image_insight.config.AdvancedQwenConfig.
+                    max_new_tokens=advanced_qwen_config.max_new_tokens,
+                    timeout_seconds=advanced_qwen_config.timeout_seconds,
+                    repetition_penalty=advanced_qwen_config.repetition_penalty,
                 )
             except Exception:
                 logger.exception(

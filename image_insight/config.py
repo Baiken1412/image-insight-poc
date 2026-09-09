@@ -62,6 +62,59 @@ def load_qwen_config() -> QwenConfig:
 
 
 @dataclass(frozen=True)
+class AdvancedQwenConfig:
+    """Advanced mode's own generation budget — deliberately separate from
+    QwenConfig.max_new_tokens (shared with fast mode) so tuning one never
+    moves the other. See image_insight/vlm/qwen_client.py's QwenVisionAnalyzer
+    for how these are actually enforced (per-call override + a wall-clock
+    StoppingCriteria, not just a bigger/smaller number)."""
+
+    max_new_tokens: int
+    timeout_seconds: float
+    repetition_penalty: float
+
+
+def load_advanced_qwen_config() -> AdvancedQwenConfig:
+    return AdvancedQwenConfig(
+        # A well-formed advanced-mode item list rarely needs more than a
+        # couple thousand tokens; 4096 leaves headroom for a busy photo
+        # without paying for the runaway/repetitive generation observed at
+        # the old shared default (9999, formerly 99999) on complex photos.
+        max_new_tokens=int(os.environ.get("QWEN_ADVANCED_MAX_NEW_TOKENS", "4096")),
+        # Hard wall-clock ceiling on a single advanced-mode photo analysis,
+        # enforced via a StoppingCriteria inside model.generate() itself (see
+        # LocalQwenTransport.complete) — actually halts generation and frees
+        # the GPU, rather than only abandoning the HTTP response while
+        # inference keeps running in its worker thread.
+        timeout_seconds=float(os.environ.get("QWEN_ADVANCED_TIMEOUT", "300")),
+        # Root cause of real multi-minute advanced-mode hangs on text-dense
+        # product-packaging photos: the model gets stuck looping the same
+        # few label phrases inside visible_text verbatim (e.g. "MOUTAI" /
+        # "防伪追溯器方法介绍" / "贵州茅台酒股份有限公司" cycling ~90 times),
+        # never closing the JSON before hitting max_new_tokens.
+        #
+        # Two decoding-level fixes were tried and BOTH reverted after
+        # breaking output on otherwise-clean photos (13.png/14.png, tested
+        # repeatedly): transformers.no_repeat_ngram_size (hard n-gram
+        # blocking) either let the loop through (low threshold) or forced
+        # completely garbled/invalid Unicode output (high threshold, even on
+        # the SAME Moutai photo it was meant to fix); raising
+        # repetition_penalty to 1.3 did the same — garbled output on 13/14,
+        # not even a full fix on the Moutai photo. This model + greedy
+        # decoding is evidently too fragile for either lever at a strength
+        # that actually suppresses the loop. repetition_penalty is kept at
+        # fast mode's own proven-safe 1.15 (unchanged) rather than shipping
+        # an override that trades a slow failure for a silently-corrupted
+        # one. The actual fix for this hang is the trio of max_new_tokens
+        # (4096, well below the old 9999/99999), the image pre-downscale,
+        # and the visible_text prompt cap/post-parse truncation above/below
+        # this field — worst case measured at ~166s (vs. 16+ minutes
+        # before), safely inside QWEN_ADVANCED_TIMEOUT's 300s backstop.
+        repetition_penalty=float(os.environ.get("QWEN_ADVANCED_REPETITION_PENALTY", "1.15")),
+    )
+
+
+@dataclass(frozen=True)
 class AppConfig:
     rfdetr_variant: str
     min_phone_confidence: float

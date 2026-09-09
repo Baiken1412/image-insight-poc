@@ -6,7 +6,12 @@ from pathlib import Path
 import pytest
 
 from image_insight.ocr.pp_ocr import OcrTextBox
-from image_insight.vlm.qwen_client import QwenVisionAnalyzer, analyze_advanced_group
+from image_insight.vlm.qwen_client import (
+    GenerationStats,
+    QwenVisionAnalyzer,
+    _prepare_advanced_image,
+    analyze_advanced_group,
+)
 from image_insight.vlm.schema import FieldStatus
 
 
@@ -32,8 +37,8 @@ class FakeTransport:
         self._error = error
         self.last_call = None
 
-    def complete(self, *, image_base64: str, system_prompt: str) -> str:
-        self.last_call = {"image_base64": image_base64, "system_prompt": system_prompt}
+    def complete(self, *, image_base64: str, system_prompt: str, **kwargs) -> str:
+        self.last_call = {"image_base64": image_base64, "system_prompt": system_prompt, **kwargs}
         if self._error:
             raise self._error
         return self._response_text
@@ -264,6 +269,30 @@ def test_analyze_flags_category_pending_review_on_low_confidence(tiny_jpeg):
     assert result.needs_manual_review is True
 
 
+def test_analyze_clamps_visible_text_to_deduped_short_entries(tiny_jpeg):
+    # Real observed failure: a text-dense product-packaging photo (labels,
+    # barcodes) got the model stuck repeating the same few label phrases
+    # verbatim dozens of times inside visible_text — repetition_penalty
+    # targets the loop case at generation time, but this is the
+    # defense-in-depth backstop for a well-formed response that still lists
+    # a long label verbatim or repeats an entry a few times.
+    payload = json.loads(json.dumps(VALID_RESPONSE))
+    payload["items"][0]["visible_text"] = (
+        ["MOUTAI", "MOUTAI", "MOUTAI"]  # exact duplicates must collapse to one
+        + ["这是一段非常长的防伪追溯说明文字用来测试是否会被截断到指定长度以内"]  # over max chars
+        + [f"条目{i}" for i in range(20)]  # far more than the max item count
+    )
+    transport = FakeTransport(response_text=json.dumps(payload))
+    analyzer = QwenVisionAnalyzer(transport, model_version="qwen3-vl-test")
+
+    result = analyzer.analyze(tiny_jpeg)
+
+    texts = result.items[0].visible_text
+    assert texts.count("MOUTAI") == 1  # duplicates collapsed
+    assert len(texts) <= 8  # ADVANCED_VISIBLE_TEXT_MAX_ITEMS
+    assert all(len(t) <= 31 for t in texts)  # ADVANCED_VISIBLE_TEXT_MAX_CHARS + "…"
+
+
 def test_analyze_tolerates_malformed_category_confidence_without_dropping_the_item(tiny_jpeg):
     # Same class of regression as fast mode: a bad confidence value must not
     # discard an otherwise-good structured result.
@@ -378,7 +407,7 @@ def test_analyze_advanced_group_merges_same_category_across_angles(tmp_path: Pat
     back_b64 = base64.b64encode(back.read_bytes()).decode("ascii")
 
     class ScriptedTransport:
-        def complete(self, *, image_base64: str, system_prompt: str) -> str:
+        def complete(self, *, image_base64: str, system_prompt: str, **kwargs) -> str:
             if image_base64 == front_b64:
                 return json.dumps(front_response)
             if image_base64 == back_b64:
@@ -400,7 +429,7 @@ def test_analyze_advanced_group_reports_parse_error_when_every_angle_fails(tmp_p
     bad.write_bytes(b"bad")
 
     class BrokenTransport:
-        def complete(self, *, image_base64: str, system_prompt: str) -> str:
+        def complete(self, *, image_base64: str, system_prompt: str, **kwargs) -> str:
             return "not json"
 
     analyzer = QwenVisionAnalyzer(BrokenTransport(), model_version="qwen3-vl-test")
@@ -429,7 +458,7 @@ def test_analyze_advanced_group_propagates_truncated_from_any_angle(tmp_path: Pa
     )
 
     class ScriptedTransport:
-        def complete(self, *, image_base64: str, system_prompt: str) -> str:
+        def complete(self, *, image_base64: str, system_prompt: str, **kwargs) -> str:
             if image_base64 == clean_b64:
                 return json.dumps(VALID_RESPONSE)
             if image_base64 == cut_b64:
@@ -443,3 +472,137 @@ def test_analyze_advanced_group_propagates_truncated_from_any_angle(tmp_path: Pa
     # one angle's response got truncated (but partially recovered) — that
     # must not silently disappear just because another angle was clean.
     assert result.truncated is True
+
+
+# ---------------------------------------------------------------------------
+# Advanced-mode large-photo downscale (_prepare_advanced_image) — fast mode
+# has no equivalent and is untouched by any of this.
+# ---------------------------------------------------------------------------
+
+
+def _make_png_bytes(width: int, height: int) -> bytes:
+    import io
+
+    from PIL import Image
+
+    buffer = io.BytesIO()
+    Image.new("RGB", (width, height), color=(120, 130, 140)).save(buffer, format="PNG")
+    return buffer.getvalue()
+
+
+def test_prepare_advanced_image_leaves_small_photo_untouched():
+    original = _make_png_bytes(800, 600)  # 480,000px — well under the threshold
+
+    image_base64, info = _prepare_advanced_image(original)
+
+    assert info.resized is False
+    assert info.original_size == (800, 600)
+    assert info.processed_size == (800, 600)
+    import base64
+
+    assert base64.b64decode(image_base64) == original  # untouched, no re-encode
+
+
+def test_prepare_advanced_image_downscales_large_photo_preserving_aspect_ratio():
+    original = _make_png_bytes(3072, 4096)  # 12,582,912px — mirrors the real slow-request photo
+
+    _, info = _prepare_advanced_image(original)
+
+    assert info.original_size == (3072, 4096)
+    assert info.resized is True
+    assert max(info.processed_size) == 2048
+    # aspect ratio preserved (3:4)
+    assert info.processed_size == (1536, 2048)
+    assert info.processed_pixels < info.original_pixels
+
+
+def test_prepare_advanced_image_gracefully_skips_resize_for_undecodable_bytes():
+    # Not a real image (e.g. a corrupt upload, or a test's placeholder bytes)
+    # — must not raise; resizing is an optimization, not a validation gate.
+    image_base64, info = _prepare_advanced_image(b"not an image")
+
+    assert info.resized is False
+    import base64
+
+    assert base64.b64decode(image_base64) == b"not an image"  # passed through untouched
+
+
+# ---------------------------------------------------------------------------
+# Advanced-mode independent max_new_tokens / timeout (config.AdvancedQwenConfig)
+# ---------------------------------------------------------------------------
+
+
+class RecordingTransport:
+    """Captures the kwargs QwenVisionAnalyzer.analyze() passes to complete(),
+    without touching real PIL/GPU — used to verify advanced mode's own
+    generation budget reaches the transport, independent of whatever the
+    transport itself might default to (that default is what fast mode uses)."""
+
+    def __init__(self, response_text: str, last_usage: GenerationStats | None = None):
+        self._response_text = response_text
+        self.last_usage = last_usage
+        self.last_call = None
+
+    def complete(self, *, image_base64: str, system_prompt: str, **kwargs) -> str:
+        self.last_call = kwargs
+        return self._response_text
+
+
+def test_analyze_passes_its_own_max_new_tokens_and_timeout_to_the_transport(tiny_jpeg):
+    transport = RecordingTransport(json.dumps(VALID_RESPONSE))
+    analyzer = QwenVisionAnalyzer(
+        transport,
+        model_version="qwen3-vl-test",
+        max_new_tokens=4096,
+        timeout_seconds=300.0,
+        repetition_penalty=1.3,
+    )
+
+    analyzer.analyze(tiny_jpeg)
+
+    assert transport.last_call == {
+        "max_new_tokens": 4096,
+        "timeout_seconds": 300.0,
+        "repetition_penalty": 1.3,
+    }
+
+
+def test_analyze_surfaces_a_specific_message_when_generation_times_out_with_nothing_salvaged(tiny_jpeg):
+    transport = RecordingTransport(
+        response_text="{",  # nothing recoverable at all
+        last_usage=GenerationStats(
+            prompt_tokens=100,
+            completion_tokens=1,
+            finish_reason="timeout",
+            inference_time=300.0,
+            model_start_time=0.0,
+            model_end_time=300.0,
+        ),
+    )
+    analyzer = QwenVisionAnalyzer(transport, model_version="qwen3-vl-test", timeout_seconds=300.0)
+
+    result = analyzer.analyze(tiny_jpeg)
+
+    assert result.items == []
+    assert "超时" in result.parse_error
+    assert result.needs_manual_review is True
+
+
+def test_analyze_does_not_override_error_message_when_finish_reason_is_not_timeout(tiny_jpeg):
+    transport = RecordingTransport(
+        response_text="this is not json at all",
+        last_usage=GenerationStats(
+            prompt_tokens=100,
+            completion_tokens=50,
+            finish_reason="stop",
+            inference_time=1.0,
+            model_start_time=0.0,
+            model_end_time=1.0,
+        ),
+    )
+    analyzer = QwenVisionAnalyzer(transport, model_version="qwen3-vl-test")
+
+    result = analyzer.analyze(tiny_jpeg)
+
+    assert result.items == []
+    assert "超时" not in result.parse_error
