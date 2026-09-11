@@ -25,6 +25,7 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Optional
 
 from dotenv import load_dotenv
 
@@ -58,6 +59,68 @@ def load_qwen_config() -> QwenConfig:
         # vision tower and OOM an 8GB card. See LocalQwenTransport docstring.
         max_image_pixels=int(os.environ.get("QWEN_MAX_IMAGE_PIXELS", str(1024 * 1024))),
         min_image_pixels=int(os.environ.get("QWEN_MIN_IMAGE_PIXELS", str(256 * 16 * 16))),
+    )
+
+
+def load_qwen_backend() -> str:
+    """Which transport image_insight/api/main.py should wire up:
+    "local" (default — image_insight.vlm.qwen_client.LocalQwenTransport,
+    runs fully offline, see 特别需求补充.md 1.6) or "remote"
+    (RemoteQwenTransport, calls out to load_remote_qwen_config()'s
+    base_url).
+
+    Defaults to "local" rather than inferring "remote" from the mere
+    presence of QWEN_REMOTE_BASE_URL — this project's photos are
+    case-property evidence with a documented no-external-upload
+    requirement, so switching to a backend that sends them over the network
+    must be an explicit, deliberate choice, never an accidental side effect
+    of leaving an old .env value set.
+    """
+    backend = os.environ.get("QWEN_BACKEND", "local").strip().lower()
+    if backend not in ("local", "remote"):
+        raise ValueError(f"invalid QWEN_BACKEND={backend!r}; expected 'local' or 'remote'")
+    return backend
+
+
+@dataclass(frozen=True)
+class RemoteQwenConfig:
+    """Only used when load_qwen_backend() == "remote". base_url should point
+    at an OpenAI-compatible chat-completions endpoint (vLLM/SGLang/
+    Xinference/etc. serving Qwen3-VL) — see RemoteQwenTransport's docstring
+    for why this must be infrastructure you control (private network/VPN),
+    not a public third-party API.
+    """
+
+    base_url: str
+    model_id: str
+    api_key: Optional[str]
+    request_timeout: float
+
+
+def load_remote_qwen_config() -> Optional[RemoteQwenConfig]:
+    """Returns None if QWEN_REMOTE_BASE_URL isn't set — callers (currently
+    image_insight/api/main.py) treat that as a configuration error when
+    QWEN_BACKEND=remote, since there is then nothing to connect to."""
+    base_url = os.environ.get("QWEN_REMOTE_BASE_URL", "").strip()
+    if not base_url:
+        return None
+    return RemoteQwenConfig(
+        base_url=base_url,
+        # Falls back to QWEN_MODEL_ID (the same variable local mode reads)
+        # only for convenience when the remote server happens to be serving
+        # a model under that same id/name; set QWEN_REMOTE_MODEL_ID
+        # explicitly whenever the remote deployment's model name differs.
+        model_id=os.environ.get("QWEN_REMOTE_MODEL_ID") or os.environ.get("QWEN_MODEL_ID", "Qwen/Qwen3-VL-2B-Instruct"),
+        # Never hardcoded, never defaulted to a real value — a bare API key
+        # in .env is fine (it's git-ignored, see .gitignore), but nothing in
+        # this codebase supplies one implicitly.
+        api_key=os.environ.get("QWEN_REMOTE_API_KEY") or None,
+        # Network round-trip to another machine, so this needs its own
+        # timeout distinct from QWEN_ADVANCED_TIMEOUT (which bounds local
+        # model.generate() wall-clock time via a StoppingCriteria — a
+        # mechanism that has no remote equivalent; a remote call can only be
+        # abandoned at the HTTP layer, which is what this governs).
+        request_timeout=float(os.environ.get("QWEN_REMOTE_REQUEST_TIMEOUT", "300")),
     )
 
 

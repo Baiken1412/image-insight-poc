@@ -2,7 +2,7 @@
 
 **🌐 [English](README.md) | [中文](README.zh.md)**
 
-给计算机一张照片，看它能看懂多少——涉案财物视觉识别 PoC 的产品化 demo。**完全本地离线运行，不联网、不调用任何云端 API。**
+给计算机一张照片，看它能看懂多少——涉案财物视觉识别 PoC 的产品化 demo。**默认完全本地离线运行，不联网、不调用任何云端 API。** 也提供可选的远程 GPU 后端，供没有本地 GPU 的部署环境使用（见下文"本地 vs 远程 GPU 后端"）——启用后照片会离开本机，因此必须指向自己可控的基础设施，而不是公网第三方 API。
 
 ## 两种模式
 
@@ -20,6 +20,17 @@
 每次分析结果会自动存入本地 SQLite 数据库（`image_insight.db`，`IMAGE_INSIGHT_DB_PATH` 环境变量可改路径），按"物品编号（goods_id）+ 模式（快速/高级）"为主键。**同一件物品第二次分析会覆盖原有记录，不会新增一条**——数据库存的是"这件物品目前最新的分析结果"，不是每次运行都往里堆的流水记录。快速模式和高级模式的结果分开存，跑一次快速模式不会覆盖之前的高级模式记录，反之亦然。
 
 保存失败不会影响本次分析结果的正常显示（和 OCR 一样是"锦上添花"，不是硬依赖）。`GET /api/records`（可加 `?mode=fast` 或 `?mode=advanced` 过滤）能看到当前存了什么。
+
+## 本地 vs 远程 GPU 后端
+
+两种模式都通过一个很薄的 `ChatCompletionTransport` 抽象（`image_insight/vlm/qwen_client.py`）调用 Qwen3-VL，因此实际用哪种后端跑模型只是配置项，不需要改代码：
+
+- **`QWEN_BACKEND=local`**（默认）——在本机自己的 GPU/CPU 上加载 Qwen3-VL 权重，分析时完全离线，即上文所述。
+- **`QWEN_BACKEND=remote`**——用于把本应用部署在没有 GPU 的机器上（比如公司台式机）：每张照片会发送给 `QWEN_REMOTE_BASE_URL` 指定的、OpenAI 兼容的 chat-completions 接口（例如用 [vLLM](https://github.com/vllm-project/vllm)、SGLang 或 Xinference 在别处的 GPU 服务器上跑 Qwen3-VL）。如果远程接口需要鉴权，可选的 `QWEN_REMOTE_API_KEY` 会作为 Bearer token 一起发送。
+
+**这是唯一一处"照片不出本机"这条保证不成立的地方**——切换到 `remote` 意味着照片字节会经网络发送到 `QWEN_REMOTE_BASE_URL` 指向的地方。如果这些照片属于涉案财物证据、受 `特别需求补充.md` §1.6 不外传要求约束，就只能把它指向自己单位可控的基础设施（自有 VPN/内网上的私有服务器），绝不能指向公网第三方 API。每个变量的具体说明见 `.env.example` 里 `QWEN_BACKEND` / `QWEN_REMOTE_*` 相关注释。
+
+如果一台机器只会用 `QWEN_BACKEND=remote`、不打算跑本地后端，可以不装 `requirements.txt` 里的 `torch`/`torchvision`/`rfdetr`/`transformers`/`accelerate`/`qwen-vl-utils`（只有本地后端需要），如果还想保留 OCR 交叉校验，把 `paddlepaddle-gpu` 换成纯 CPU 版的 `paddlepaddle` 即可。
 
 ## 快速开始
 
@@ -42,7 +53,7 @@ python -m pytest tests/ -q
 
 ### 环境变量（可选）
 
-复制 `.env.example` 为 `.env` 并按需修改，启动时会自动加载（python-dotenv），不用手动 `export`/`setx`；不设置的话都有合理默认值，高级模式不需要任何 API key（全部本地跑）。系统/终端里已经设置过的同名环境变量优先级高于 `.env` 文件里的值。
+复制 `.env.example` 为 `.env` 并按需修改，启动时会自动加载（python-dotenv），不用手动 `export`/`setx`；不设置的话都有合理默认值，默认（`QWEN_BACKEND=local`）情况下高级模式不需要任何 API key（全部本地跑）——可选的例外见上文"本地 vs 远程 GPU 后端"。系统/终端里已经设置过的同名环境变量优先级高于 `.env` 文件里的值。
 
 ## 目录说明
 

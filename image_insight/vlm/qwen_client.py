@@ -1,18 +1,30 @@
-"""Advanced-mode analysis via Qwen3-VL, run entirely on the local GPU.
+"""Advanced-mode analysis via Qwen3-VL, run on the local GPU by default.
 
 特别需求补充.md 1.6 requires the whole system to run fully offline — no
 photo may be uploaded to any external server. LocalQwenTransport loads
 Qwen3-VL's weights once (a one-time download during setup, cached locally
 afterward) and does inference on-device; nothing is called over the
-network at analysis time.
+network at analysis time. This remains the default backend.
+
+RemoteQwenTransport is an opt-in alternative (see image_insight.config's
+QWEN_BACKEND) for deployments where the app runs on hardware with no GPU
+(e.g. a company desktop) and needs to call out to an OpenAI-compatible
+chat-completions endpoint (vLLM/SGLang/Xinference/etc.) serving Qwen3-VL on
+a GPU box elsewhere. Choosing that backend means photo bytes DO leave this
+machine over the network — it is only appropriate when QWEN_REMOTE_BASE_URL
+points at infrastructure the deploying organization itself controls (a
+private server on a VPN/intranet), never a public third-party API. That
+choice is a deployment decision made via environment variables, not
+something this code can verify on its own.
 
 The model call is isolated behind the ChatCompletionTransport protocol so
-unit tests can inject a fake transport instead of loading real GPU weights.
-Anti-hallucination is enforced twice: once via explicit prompt instructions,
-and again structurally by image_insight.vlm.schema (a field claiming
-"confirmed" without a value, or "unknown" while smuggling in a value, fails
-pydantic validation and the whole item is discarded into parse_error rather
-than shown to a user).
+unit tests can inject a fake transport instead of loading real GPU weights,
+and so both transports are interchangeable to QwenVisionAnalyzer/
+FastVisionAnalyzer. Anti-hallucination is enforced twice: once via explicit
+prompt instructions, and again structurally by image_insight.vlm.schema (a
+field claiming "confirmed" without a value, or "unknown" while smuggling in
+a value, fails pydantic validation and the whole item is discarded into
+parse_error rather than shown to a user).
 """
 from __future__ import annotations
 
@@ -520,6 +532,125 @@ class LocalQwenTransport:
             del inputs
             if self._torch.cuda.is_available():
                 self._torch.cuda.empty_cache()
+
+
+class RemoteQwenTransport:
+    """Alternative transport: calls a remote OpenAI-compatible chat-completions
+    endpoint (vLLM/SGLang/Xinference/etc. serving Qwen3-VL) instead of loading
+    weights on this machine — for deployments on GPU-less hardware (e.g. a
+    company desktop with no local GPU) that need to reach a cloud/remote GPU
+    box. See this module's docstring for the offline-requirement caveat: this
+    is opt-in only (image_insight.config.QWEN_BACKEND), and the operator is
+    responsible for pointing base_url at infrastructure they control, not a
+    public third-party API.
+
+    Implements the same ChatCompletionTransport shape as LocalQwenTransport
+    (including the last_usage bookkeeping QwenVisionAnalyzer's performance
+    log reads), so the two are drop-in interchangeable and QwenVisionAnalyzer/
+    FastVisionAnalyzer need no changes to use either one.
+    """
+
+    def __init__(
+        self,
+        base_url: str,
+        model_id: str,
+        api_key: Optional[str] = None,
+        max_new_tokens: int = 1024,
+        request_timeout: float = 300.0,
+    ):
+        self._base_url = base_url.rstrip("/")
+        self._model_id = model_id
+        self._api_key = api_key
+        self._max_new_tokens = max_new_tokens
+        self._request_timeout = request_timeout
+        # Same field name/shape as LocalQwenTransport.last_usage — read back
+        # by QwenVisionAnalyzer._log_performance via getattr(..., None).
+        self.last_usage: Optional[GenerationStats] = None
+
+    def complete(
+        self,
+        *,
+        image_base64: str,
+        system_prompt: str,
+        max_new_tokens: Optional[int] = None,
+        timeout_seconds: Optional[float] = None,
+        repetition_penalty: Optional[float] = None,
+    ) -> str:
+        import requests
+        from PIL import Image
+
+        # Re-encode as JPEG so the data: URI's declared mime type always
+        # matches the actual bytes, regardless of what format the caller's
+        # image_base64 happened to be in (PNG after _prepare_advanced_image's
+        # resize path, or the original upload's own format otherwise) — a
+        # server that trusts the declared mime over sniffing the bytes would
+        # otherwise fail to decode a mismatched pairing.
+        image = Image.open(io.BytesIO(base64.b64decode(image_base64))).convert("RGB")
+        buffer = io.BytesIO()
+        image.save(buffer, format="JPEG", quality=90)
+        data_url = "data:image/jpeg;base64," + base64.b64encode(buffer.getvalue()).decode("ascii")
+
+        effective_max_new_tokens = self._max_new_tokens if max_new_tokens is None else max_new_tokens
+        effective_timeout = self._request_timeout if timeout_seconds is None else timeout_seconds
+
+        payload = {
+            "model": self._model_id,
+            "messages": [
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "image_url", "image_url": {"url": data_url}},
+                        {"type": "text", "text": system_prompt},
+                    ],
+                }
+            ],
+            "max_tokens": effective_max_new_tokens,
+            # Greedy-equivalent, matching LocalQwenTransport's do_sample=False
+            # — structured JSON extraction wants consistency, not variety.
+            "temperature": 0,
+        }
+        if repetition_penalty is not None:
+            # vLLM's OpenAI-compatible server accepts this as an extra
+            # sampling param; a strictly spec-only server would reject an
+            # unknown field with 422 rather than silently ignoring it, so
+            # this is only safe to rely on against vLLM/SGLang-family
+            # servers — which is the expected deployment target here.
+            payload["repetition_penalty"] = repetition_penalty
+
+        headers = {"Content-Type": "application/json"}
+        if self._api_key:
+            headers["Authorization"] = f"Bearer {self._api_key}"
+
+        model_start_time = time.time()
+        start = time.monotonic()
+        try:
+            response = requests.post(
+                f"{self._base_url}/chat/completions",
+                json=payload,
+                headers=headers,
+                timeout=effective_timeout,
+            )
+            response.raise_for_status()
+        except requests.exceptions.Timeout as exc:
+            raise TimeoutError(
+                f"远程 Qwen 服务调用超时（超过 {effective_timeout:.0f} 秒）：{self._base_url}"
+            ) from exc
+        except requests.exceptions.RequestException as exc:
+            raise RuntimeError(f"远程 Qwen 服务调用失败（{self._base_url}）：{exc}") from exc
+
+        inference_time = time.monotonic() - start
+        data = response.json()
+        usage = data.get("usage") or {}
+        choice = data["choices"][0]
+        self.last_usage = GenerationStats(
+            prompt_tokens=int(usage.get("prompt_tokens", 0)),
+            completion_tokens=int(usage.get("completion_tokens", 0)),
+            finish_reason=str(choice.get("finish_reason", "stop")),
+            inference_time=inference_time,
+            model_start_time=model_start_time,
+            model_end_time=time.time(),
+        )
+        return choice["message"]["content"]
 
 
 class QwenVisionAnalyzer:

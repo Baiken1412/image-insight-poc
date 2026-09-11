@@ -1,5 +1,6 @@
 """FastAPI app tying fast mode and advanced mode together — both backed by
-the same on-device Qwen3-VL model, loaded once (see LocalQwenTransport).
+the same Qwen3-VL model instance, loaded once (see LocalQwenTransport /
+RemoteQwenTransport in image_insight/vlm/qwen_client.py).
 
 Fast mode was originally RF-DETR-based (5 fixed COCO categories); replaced
 with an open-vocabulary, natural-language Qwen3-VL prompt per product
@@ -9,10 +10,15 @@ zero-shot phone-counting code (image_insight/detection/phone_counter.py)
 is kept as a standalone, tested, evaluated artifact (93.3% accuracy on a
 manual ground-truth sample, see eval/) but is no longer wired into the app.
 
-Both models run entirely on-device (no network calls at request time — see
-特别需求补充.md 1.6) and are loaded once at startup via the lifespan handler,
-injected through Depends — tests override get_fast_analyzer/get_analyzer
-directly rather than loading real models or touching app.state.
+By default both modes run entirely on-device with no network calls at
+request time (特别需求补充.md 1.6's offline requirement, see
+LocalQwenTransport). QWEN_BACKEND=remote is an opt-in alternative for
+GPU-less deployment hosts (see image_insight.config.load_qwen_backend /
+RemoteQwenTransport) that calls out to a remote GPU box instead — choosing
+it is a deliberate deployment decision, not the default. Either way, the
+model is loaded once at startup via the lifespan handler and injected
+through Depends — tests override get_fast_analyzer/get_analyzer directly
+rather than loading real models or touching app.state.
 
 model.generate() is a long, blocking, GPU-bound call. Running it directly
 inside an `async def` endpoint would freeze FastAPI's single-threaded event
@@ -40,11 +46,23 @@ from starlette.concurrency import run_in_threadpool
 from starlette.requests import Request
 
 from image_insight import db
-from image_insight.config import load_advanced_qwen_config, load_db_config, load_ocr_config, load_qwen_config
+from image_insight.config import (
+    load_advanced_qwen_config,
+    load_db_config,
+    load_ocr_config,
+    load_qwen_backend,
+    load_qwen_config,
+    load_remote_qwen_config,
+)
 from image_insight.goods import group_uploaded_photos
 from image_insight.ocr.pp_ocr import PaddleOcrTextRecognizer
 from image_insight.vlm.fast_analyzer import FastVisionAnalyzer, analyze_goods_group
-from image_insight.vlm.qwen_client import LocalQwenTransport, QwenVisionAnalyzer, analyze_advanced_group
+from image_insight.vlm.qwen_client import (
+    LocalQwenTransport,
+    QwenVisionAnalyzer,
+    RemoteQwenTransport,
+    analyze_advanced_group,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -90,14 +108,30 @@ def create_app(*, load_models: bool = True) -> FastAPI:
                 )
             qwen_config = load_qwen_config()
             ocr_config = load_ocr_config()
-            logger.info("loading local Qwen3-VL (%s)...", qwen_config.model_id)
+            backend = load_qwen_backend()
+            logger.info("loading Qwen3-VL backend=%s (%s)...", backend, qwen_config.model_id)
             try:
-                transport = LocalQwenTransport(
-                    qwen_config.model_id,
-                    max_new_tokens=qwen_config.max_new_tokens,
-                    max_pixels=qwen_config.max_image_pixels,
-                    min_pixels=qwen_config.min_image_pixels,
-                )
+                if backend == "remote":
+                    remote_config = load_remote_qwen_config()
+                    if remote_config is None:
+                        raise RuntimeError(
+                            "QWEN_BACKEND=remote but QWEN_REMOTE_BASE_URL is not set — "
+                            "see .env.example for the remote-backend variables"
+                        )
+                    transport = RemoteQwenTransport(
+                        base_url=remote_config.base_url,
+                        model_id=remote_config.model_id,
+                        api_key=remote_config.api_key,
+                        max_new_tokens=qwen_config.max_new_tokens,
+                        request_timeout=remote_config.request_timeout,
+                    )
+                else:
+                    transport = LocalQwenTransport(
+                        qwen_config.model_id,
+                        max_new_tokens=qwen_config.max_new_tokens,
+                        max_pixels=qwen_config.max_image_pixels,
+                        min_pixels=qwen_config.min_image_pixels,
+                    )
                 # Fast and advanced mode share one loaded model instance —
                 # only the prompt differs, so there's no reason to pay for
                 # two copies of the weights.
@@ -129,7 +163,8 @@ def create_app(*, load_models: bool = True) -> FastAPI:
                 )
             except Exception:
                 logger.exception(
-                    "failed to load local Qwen3-VL model (%s) — fast and advanced mode disabled",
+                    "failed to load Qwen3-VL backend=%s (%s) — fast and advanced mode disabled",
+                    backend,
                     qwen_config.model_id,
                 )
         yield

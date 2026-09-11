@@ -25,6 +25,16 @@ pillow
 paddlepaddle-gpu
 paddleocr
 
+# Remote GPU backend (optional — QWEN_BACKEND=remote, see .env.example).
+# Only this is needed for the Qwen3-VL call itself when running on a
+# GPU-less host that talks to a remote OpenAI-compatible endpoint
+# (vLLM/SGLang/Xinference) instead: torch/transformers/accelerate/
+# qwen-vl-utils above and paddlepaddle-gpu (GPU build) are only required for
+# the default QWEN_BACKEND=local path and OCR respectively — skip them (or
+# swap paddlepaddle-gpu for the CPU-only `paddlepaddle` package) on a
+# machine that only ever runs the remote backend.
+requests
+
 # Tests
 pytest
 pytest-asyncio

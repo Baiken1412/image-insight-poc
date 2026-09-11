@@ -2,7 +2,7 @@
 
 **🌐 [English](README.md) | [中文](README.zh.md)**
 
-Give the computer a photo and see how much it can understand — a productized demo of a case-property visual identification PoC. **Runs entirely offline on local hardware — no network calls, no cloud API of any kind.**
+Give the computer a photo and see how much it can understand — a productized demo of a case-property visual identification PoC. **By default, runs entirely offline on local hardware — no network calls, no cloud API of any kind.** An opt-in remote-GPU backend is also available for hardware with no local GPU (see "Local vs. remote GPU backend" below) — using it means photos leave the machine, so it must be pointed at infrastructure you control, not a public API.
 
 ## Two modes
 
@@ -20,6 +20,17 @@ The UI supports batch upload: selected photos show thumbnails immediately (each 
 Every analysis result is automatically saved to a local SQLite database (`image_insight.db`, path configurable via the `IMAGE_INSIGHT_DB_PATH` environment variable), keyed by "item id (goods_id) + mode (fast/advanced)". **Re-analyzing the same item overwrites the existing record rather than adding a new one** — the database stores "this item's latest analysis result," not an append-only log of every run. Fast-mode and advanced-mode results are stored separately, so running fast mode won't overwrite a prior advanced-mode record, and vice versa.
 
 A save failure does not affect the display of the current analysis result (same as OCR — a nice-to-have, not a hard dependency). `GET /api/records` (optionally filtered with `?mode=fast` or `?mode=advanced`) shows what's currently stored.
+
+## Local vs. remote GPU backend
+
+Both modes call Qwen3-VL through a small `ChatCompletionTransport` abstraction (`image_insight/vlm/qwen_client.py`), so which backend actually runs the model is a config choice, not a code change:
+
+- **`QWEN_BACKEND=local`** (default) — loads Qwen3-VL's weights on this machine's own GPU/CPU. Fully offline at request time, as described above.
+- **`QWEN_BACKEND=remote`** — for running the app itself on hardware with no GPU (e.g. a company desktop): each photo is sent to `QWEN_REMOTE_BASE_URL`, an OpenAI-compatible chat-completions endpoint (e.g. [vLLM](https://github.com/vllm-project/vllm), SGLang, or Xinference serving Qwen3-VL) running on a GPU box elsewhere. Optional `QWEN_REMOTE_API_KEY` is sent as a Bearer token if the endpoint requires one.
+
+**This is the one place the "no photo leaves the machine" guarantee doesn't hold** — switching to `remote` means photo bytes travel over the network to whatever `QWEN_REMOTE_BASE_URL` points at. Only point it at infrastructure your organization controls (a private server on your own VPN/intranet), never a public third-party API, if the photos are case-property evidence subject to `特别需求补充.md` §1.6's no-external-upload requirement. See the `QWEN_BACKEND` / `QWEN_REMOTE_*` comments in `.env.example` for every variable.
+
+On a GPU-less host that only ever uses `QWEN_BACKEND=remote`, you can skip installing `torch`/`torchvision`/`rfdetr`/`transformers`/`accelerate`/`qwen-vl-utils` from `requirements.txt` (only needed for the local backend) and swap `paddlepaddle-gpu` for the CPU-only `paddlepaddle` package if you still want the OCR cross-check.
 
 ## Quick start
 
@@ -43,7 +54,7 @@ python -m pytest tests/ -q
 
 ### Environment variables (optional)
 
-Copy `.env.example` to `.env` and adjust as needed — it's loaded automatically at startup (python-dotenv), no manual `export`/`setx` required. Sensible defaults are used if unset, and advanced mode requires no API key at all (everything runs locally). A variable already set in your real shell/OS environment always takes priority over the value in `.env`.
+Copy `.env.example` to `.env` and adjust as needed — it's loaded automatically at startup (python-dotenv), no manual `export`/`setx` required. Sensible defaults are used if unset, and by default (`QWEN_BACKEND=local`) advanced mode requires no API key at all (everything runs locally) — see "Local vs. remote GPU backend" above for the opt-in exception. A variable already set in your real shell/OS environment always takes priority over the value in `.env`.
 
 ## Directory layout
 
